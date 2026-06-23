@@ -1,0 +1,9 @@
+int main(int argc, char **argv)
+{
+    if (atoi(argv[1]) == 423)
+    {
+        // setuid/setgid to level1 then execv("/bin/sh")
+    }
+    else
+        write(1, "No !\n", 5);
+}

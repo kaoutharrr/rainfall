@@ -1,0 +1,28 @@
+### Level 0 Walkthrough
+
+**1. Binary Analysis**
+
+* Run `gdb ./level0` and execute `disas main`.
+* The assembly shows a call to `atoi`, which converts the first program argument (`argv[1]`) from a string to an integer.
+* The result of `atoi` is temporarily stored in the `%eax` register.
+* The instruction immediately following is `cmp $0x1a7, %eax`. This compares your provided input against a hardcoded value in the binary.
+
+**2. Value Conversion**
+
+* The hardcoded value is in hexadecimal format: `0x1a7`.
+* Converting `0x1a7` to its decimal equivalent yields `423`. This is the required passcode to bypass the check.
+
+**3. Exploitation**
+
+* Execute the binary with the discovered passcode: `./level0 423`.
+* Satisfying the comparison condition causes the program to elevate your privileges (usually via `setresuid`) and spawn a new shell operating as the `level1` user.
+
+**4. Flag Capture**
+
+* You must read the `.pass` file associated with the next user level.
+
+
+* This file is located in the home directory of that user.
+
+
+* Execute `cat /home/user/level1/.pass` to retrieve the password for the next level.
