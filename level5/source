@@ -1,0 +1,20 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+void o() {
+    system("/bin/sh");
+    _exit(1);
+}
+
+void n() {
+    char buf[512];
+
+    fgets(buf, 512, stdin);
+    printf(buf);          // format string vulnerability
+    exit(1);              // GOT overwrite redirects this to o()
+}
+
+int main() {
+    n();
+    return 0;
+}

