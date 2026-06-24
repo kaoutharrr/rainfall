@@ -1,0 +1,21 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+void n() {
+    system("/bin/sh");
+}
+
+void m() {
+    puts("Nope");
+}
+
+int main(int argc, char **argv) {
+    char *buf1 = malloc(64);
+    void (**buf2)() = malloc(4);
+    *buf2 = m;                  // default function pointer
+
+    strcpy(buf1, argv[1]);      // heap overflow vulnerability
+
+    (*buf2)();                  // calls overwritten pointer → n()
+}
