@@ -1,16 +1,26 @@
-# rainfall
-gdb : It is a command-line tool used to inspect and control what a program is doing while it executes.
-why get is dangerous: gets() reads bytes from stdin one by one and writes them into the destination buffer. It stops only when it sees a newline (\n) or EOF. It has no length parameter — it literally cannot know how big the buffer is.
+# Rainfall
 
-lea: Stands for Load Effective Address. It is primarily used to calculate addresses without ever interacting with actual memory.
+> A 42 School introductory binary exploitation / reverse engineering project.
 
-RET is just one instruction that does this:
-pop the top of the stack → put it in EIP
+## Introduction
 
-┌──────────────────┐
-│  return address  │  ← "go back here when main() is done"
-├──────────────────┤
-│  saved EBP       │
-├──────────────────┤
-│  buffer[64]      │
-└──────────────────┘
+**Rainfall** is one of 42's early security-focused projects, designed as a hands-on introduction to **binary exploitation** and **reverse engineering** on Linux. Students connect to a remote server hosting a series of small, deliberately vulnerable C binaries (`level0`, `level1`, `level2`, ...). Each level runs with elevated privileges (setuid), and the goal is to find a flaw in that level's binary that lets you read the password for the next level — effectively privilege-escalating your way up the chain.
+
+Unlike most 42 projects, there's no fixed "correct" implementation to submit. Progress is measured by how many levels you successfully clear, making it closer to a **wargame / CTF (Capture The Flag)** format than a typical coursework project.
+
+## Learning Objectives
+
+Rainfall pushes students to get comfortable with the tools and mindset of low-level security analysis:
+
+- **Reading and understanding compiled binaries** without source code, using disassemblers and debuggers.
+- **Recognizing common vulnerability classes** in C programs — memory safety issues, unsafe input handling, and unintended trust boundaries.
+- **Working with the Linux process model**, including how setuid binaries execute with the permissions of their owner rather than the invoking user.
+- **Basic exploit development fundamentals** — understanding *why* a bug is exploitable conceptually (without this repo detailing *how* to weaponize any specific level).
+- **Command-line and scripting fluency** under a constrained, minimal environment (often just a shell, GDB, and standard Linux tools — no fancy IDEs).
+
+## Tools Typically Used
+
+- **GDB** — for dynamic analysis: stepping through execution, inspecting memory/registers, setting breakpoints.
+- **objdump / readelf** — for static inspection of ELF binaries, symbols, and sections.
+- **ltrace / strace** — for observing library and system calls at runtime.
+- **Python** (often with `pwntools`-style scripting patterns) — for automating interaction with a running binary once a vulnerability is understood.
